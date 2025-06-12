@@ -57,6 +57,9 @@ func (c *Context) NewObject() *JsValue {
 func (c *Context) NewFunctionTemplate(callback FunctionCallback) *FunctionTemplate {
 	tmpl := v8go.NewFunctionTemplate(c.Raw.Isolate(), func(info *v8go.FunctionCallbackInfo) *v8go.Value {
 		result := callback(newFunctionCallbackInfo(info))
+		if result == nil {
+			return nil
+		}
 		return result.export()
 	})
 	return &FunctionTemplate{
@@ -96,6 +99,9 @@ func mustAsObject(v *v8go.Value) *v8go.Object {
 	return o
 }
 func (v *JsValue) export() *v8go.Value {
+	if v == nil {
+		return nil
+	}
 	v.Exported = true
 	return v.Raw
 }
