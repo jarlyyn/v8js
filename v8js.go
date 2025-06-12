@@ -299,6 +299,12 @@ func (i *FunctionCallbackInfo) This() *JsValue {
 func (i *FunctionCallbackInfo) Args() []*JsValue {
 	return i.args
 }
+func (i *FunctionCallbackInfo) GetArg(idx int) *JsValue {
+	if idx < 0 || idx >= len(i.args) {
+		return NewJsValue(v8go.Undefined(i.ctx.Raw.Isolate()))
+	}
+	return i.args[idx]
+}
 
 type FunctionTemplate struct {
 	tmpl *v8go.FunctionTemplate
