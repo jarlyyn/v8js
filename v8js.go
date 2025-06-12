@@ -63,6 +63,13 @@ func (c *Context) NewFunctionTemplate(callback FunctionCallback) *FunctionTempla
 		tmpl: tmpl,
 	}
 }
+func (c *Context) RunScript(script string, name string) *JsValue {
+	result, err := c.Raw.RunScript(script, name)
+	if err != nil {
+		panic(err)
+	}
+	return NewJsValue(result)
+}
 func (c *Context) CloseAndDispose() {
 	c.Raw.Close()
 	c.Raw.Isolate().Dispose()
