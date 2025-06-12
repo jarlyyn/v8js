@@ -79,7 +79,7 @@ func NewJsValue(raw *v8go.Value) *JsValue {
 		Raw:      raw,
 		Exported: false,
 	}
-	runtime.SetFinalizer(v, v.Release)
+	runtime.SetFinalizer(v, func(v *JsValue) { v.Release() })
 	return v
 }
 
