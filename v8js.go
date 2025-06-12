@@ -222,7 +222,10 @@ func (v *JsValue) MethodCall(methodName string, args ...*JsValue) *JsValue {
 	fn := v.Get(methodName) // ensure method exists
 	return fn.Call(v, args...)
 }
-
+func (v *JsValue) SetObjectMethod(ctx *Context, name string, fn FunctionCallback) {
+	f := ctx.NewFunctionTemplate(fn).GetFunction(ctx)
+	v.Set(name, f)
+}
 func (v *JsValue) Get(key string) *JsValue {
 	val, err := mustAsObject(v.Raw).Get(key)
 	if err != nil {
