@@ -8,27 +8,56 @@ import (
 )
 
 func NewContext(opt ...v8go.ContextOption) *Context {
-	return &Context{
-		Raw: v8go.NewContext(opt...),
-	}
-}
-func WrapContext(c *v8go.Context) *Context {
-	return &Context{
-		Raw: c,
-	}
+	c := &Context{Raw: v8go.NewContext(opt...)}
+	c.objectTemplate = v8go.NewObjectTemplate(c.Raw.Isolate())
+	return c
+
 }
 
 type Context struct {
-	Raw *v8go.Context
+	Raw            *v8go.Context
+	objectTemplate *v8go.ObjectTemplate
 }
 
 func (c *Context) Global() *JsValue {
-	return NewJsValue(c.Raw.Global().Value)
+	return PromiseReleaseInFuture(c.Raw.Global().Value)
 }
+
+func (c *Context) newValue(v interface{}) *JsValue {
+	val, err := v8go.NewValue(c.Raw.Isolate(), v)
+	if err != nil {
+		panic(err)
+	}
+	return PromiseReleaseInFuture(val)
+}
+func (c *Context) NewString(val string) *JsValue {
+	return c.newValue(val)
+}
+func (c *Context) NewInt32(val int32) *JsValue {
+	return c.newValue(val)
+}
+func (c *Context) NewInt64(val int64) *JsValue {
+	return c.newValue(val)
+}
+func (c *Context) NewBoolean(val bool) *JsValue {
+	return c.newValue(val)
+}
+func (c *Context) NewBigInt(val *big.Int) *JsValue {
+	return c.newValue(val)
+}
+func (c *Context) NewNumber(val float64) *JsValue {
+	return c.newValue(val)
+}
+func (c *Context) NewFunction(callback FunctionCallback) *JsValue {
+	tmpl := c.NewFunctionTemplate(callback)
+	fn := tmpl.GetFunction(c)
+	return fn
+}
+
 func (c *Context) NewStringArray(values ...string) *JsValue {
 	args := make([]*JsValue, len(values))
 	for i, v := range values {
-		args[i] = c.NewValue(v)
+		args[i] = c.NewString(v)
 	}
 	return c.NewArray(args...)
 }
@@ -37,26 +66,18 @@ func (c *Context) NewArray(values ...*JsValue) *JsValue {
 	array := global.Get("Array")
 	return array.Call(global, values...)
 }
-func (c *Context) NewValue(value interface{}) *JsValue {
-
-	v, err := v8go.NewValue(c.Raw.Isolate(), value)
-	if err != nil {
-		panic(err)
-	}
-	return NewJsValue(v)
-}
 func (c *Context) NewObject() *JsValue {
-	ot := v8go.NewObjectTemplate(c.Raw.Isolate())
-	obj, err := ot.NewInstance(c.Raw)
-	result := NewJsValue(obj.Value)
+	obj, err := c.objectTemplate.NewInstance(c.Raw)
 	if err != nil {
 		panic(err)
 	}
+	result := PromiseReleaseInFuture(obj.Value)
 	return result
 }
 func (c *Context) NewFunctionTemplate(callback FunctionCallback) *FunctionTemplate {
 	tmpl := v8go.NewFunctionTemplate(c.Raw.Isolate(), func(info *v8go.FunctionCallbackInfo) *v8go.Value {
-		result := callback(newFunctionCallbackInfo(info))
+		result := callback(newFunctionCallbackInfo(c, info))
+		defer runtime.KeepAlive(result)
 		if result == nil {
 			return nil
 		}
@@ -71,24 +92,21 @@ func (c *Context) RunScript(script string, name string) *JsValue {
 	if err != nil {
 		panic(err)
 	}
-	return NewJsValue(result)
+	return PromiseReleaseInFuture(result)
 }
 func (c *Context) CloseAndDispose() {
 	c.Raw.Close()
 	c.Raw.Isolate().Dispose()
 }
-func NewJsValue(raw *v8go.Value) *JsValue {
-	v := &JsValue{
-		Raw:      raw,
-		Exported: false,
-	}
-	runtime.SetFinalizer(v, func(v *JsValue) { v.Release() })
-	return v
+func (c *Context) NullValue() *JsValue {
+	val := PromiseReleaseInFuture(v8go.Null(c.Raw.Isolate()))
+	val.noRelease = true
+	return val
 }
 
 type JsValue struct {
-	Raw      *v8go.Value
-	Exported bool
+	raw       *v8go.Value
+	noRelease bool
 }
 
 func mustAsObject(v *v8go.Value) *v8go.Object {
@@ -102,34 +120,40 @@ func (v *JsValue) export() *v8go.Value {
 	if v == nil {
 		return nil
 	}
-	v.Exported = true
-	return v.Raw
+	return v.raw
 }
 func (v *JsValue) Call(recvr *JsValue, args ...*JsValue) *JsValue {
-	fn, err := v.Raw.AsFunction()
+	defer runtime.KeepAlive(v)
+	defer runtime.KeepAlive(recvr)
+
+	fn, err := v.raw.AsFunction()
+
 	if err != nil {
 		panic(err)
 	}
 	fnargs := make([]v8go.Valuer, len(args))
 	for i, v := range args {
 		fnargs[i] = v.export()
+		defer runtime.KeepAlive(v)
 	}
 	val, err := fn.Call(recvr.export(), fnargs...)
-	result := NewJsValue(val)
 	if err != nil {
 		panic(err)
 	}
+	result := PromiseReleaseInFuture(val)
+
 	return result
 }
 
 func (v *JsValue) Release() {
-	if !v.Exported {
-		v.Exported = true
-		if v.Raw != nil {
-			v.Raw.Release()
+	if v.raw != nil {
+		v.raw = nil
+		if !v.noRelease {
+			v.raw.Release()
 		}
 	}
 }
+
 func (v *JsValue) Array() []*JsValue {
 	result := []*JsValue{}
 	length := v.Get("length")
@@ -155,92 +179,92 @@ func (v *JsValue) StringArrry() []string {
 	return result
 }
 func (v *JsValue) String() string {
-	return v.Raw.String()
+	return v.raw.String()
 }
 
 func (v *JsValue) BigInt() *big.Int {
-	return v.Raw.BigInt()
+	return v.raw.BigInt()
 }
 func (v *JsValue) Boolean() bool {
-	return v.Raw.Boolean()
+	return v.raw.Boolean()
 }
 func (v *JsValue) Int32() int32 {
-	return v.Raw.Int32()
+	return v.raw.Int32()
 }
 func (v *JsValue) Integer() int64 {
-	return v.Raw.Integer()
+	return v.raw.Integer()
 }
 func (v *JsValue) Number() float64 {
-	return v.Raw.Number()
+	return v.raw.Number()
 }
 func (v *JsValue) Uint32() uint32 {
-	return v.Raw.Uint32()
+	return v.raw.Uint32()
 }
 func (v *JsValue) SameValue(other *JsValue) bool {
-	return v.Raw.SameValue(other.Raw)
+	return v.raw.SameValue(other.raw)
 }
 func (v *JsValue) IsUndefined() bool {
-	return v.Raw.IsUndefined()
+	return v.raw.IsUndefined()
 }
 func (v *JsValue) IsNull() bool {
-	return v.Raw.IsNull()
+	return v.raw.IsNull()
 }
 func (v *JsValue) IsNullOrUndefined() bool {
-	return v.Raw.IsNullOrUndefined()
+	return v.raw.IsNullOrUndefined()
 }
 
 func (v *JsValue) IsTrue() bool {
-	return v.Raw.IsTrue()
+	return v.raw.IsTrue()
 }
 func (v *JsValue) IsFalse() bool {
-	return v.Raw.IsFalse()
+	return v.raw.IsFalse()
 }
 
 func (v *JsValue) IsFunction() bool {
-	return v.Raw.IsFunction()
+	return v.raw.IsFunction()
 }
 
 func (v *JsValue) IsObject() bool {
-	return v.Raw.IsObject()
+	return v.raw.IsObject()
 }
 
 func (v *JsValue) IsBigInt() bool {
-	return v.Raw.IsBigInt()
+	return v.raw.IsBigInt()
 }
 func (v *JsValue) IsBoolean() bool {
-	return v.Raw.IsBoolean()
+	return v.raw.IsBoolean()
 }
 
 func (v *JsValue) IsNumber() bool {
-	return v.Raw.IsNumber()
+	return v.raw.IsNumber()
 }
 func (v *JsValue) IsInt32() bool {
-	return v.Raw.IsInt32()
+	return v.raw.IsInt32()
 }
 func (v *JsValue) IsUint32() bool {
-	return v.Raw.IsUint32()
+	return v.raw.IsUint32()
 }
 func (v *JsValue) IsDate() bool {
-	return v.Raw.IsDate()
+	return v.raw.IsDate()
 }
 func (v *JsValue) IsNativeError() bool {
-	return v.Raw.IsNativeError()
+	return v.raw.IsNativeError()
 }
 func (v *JsValue) IsRegExp() bool {
-	return v.Raw.IsRegExp()
+	return v.raw.IsRegExp()
 }
 func (v *JsValue) IsMap() bool {
-	return v.Raw.IsMap()
+	return v.raw.IsMap()
 }
 func (v *JsValue) IsSet() bool {
-	return v.Raw.IsSet()
+	return v.raw.IsSet()
 }
 func (v *JsValue) IsArray() bool {
-	return v.Raw.IsArray()
+	return v.raw.IsArray()
 }
 
 func (v *JsValue) MustMarshalJSON() []byte {
-	data, err := v.Raw.MarshalJSON()
+	data, err := v.raw.MarshalJSON()
 	if err != nil {
 		panic(err)
 	}
@@ -256,46 +280,48 @@ func (v *JsValue) SetObjectMethod(ctx *Context, name string, fn FunctionCallback
 	v.Set(name, f)
 }
 func (v *JsValue) Get(key string) *JsValue {
-	val, err := mustAsObject(v.Raw).Get(key)
+	val, err := mustAsObject(v.raw).Get(key)
 	if err != nil {
 		panic(err)
 	}
-	return NewJsValue(val)
+	return PromiseReleaseInFuture(val)
 }
 func (v *JsValue) GetIdx(idx uint32) *JsValue {
-	val, err := mustAsObject(v.Raw).GetIdx(idx)
+	val, err := mustAsObject(v.raw).GetIdx(idx)
 	if err != nil {
 		panic(err)
 	}
-	return NewJsValue(val)
+	return PromiseReleaseInFuture(val)
 }
 
 func (v *JsValue) Set(key string, val *JsValue) {
-	err := mustAsObject(v.Raw).Set(key, val.export())
+	defer runtime.KeepAlive(val)
+	err := mustAsObject(v.raw).Set(key, val.export())
 	if err != nil {
 		panic(err)
 	}
 }
 
 func (v *JsValue) SetIdx(idx uint32, val *JsValue) {
-	err := mustAsObject(v.Raw).SetIdx(idx, val.export())
+	defer runtime.KeepAlive(val)
+	err := mustAsObject(v.raw).SetIdx(idx, val.export())
 	if err != nil {
 		panic(err)
 	}
 }
 func (v *JsValue) Has(key string) bool {
-	return mustAsObject(v.Raw).Has(key)
+	return mustAsObject(v.raw).Has(key)
 }
 func (v *JsValue) HasIdx(idx uint32) bool {
-	return mustAsObject(v.Raw).HasIdx(idx)
+	return mustAsObject(v.raw).HasIdx(idx)
 }
 
 func (v *JsValue) Delete(key string) bool {
-	return mustAsObject(v.Raw).Delete(key)
+	return mustAsObject(v.raw).Delete(key)
 }
 
 func (v *JsValue) DeleteIdx(idx uint32) bool {
-	return mustAsObject(v.Raw).DeleteIdx(idx)
+	return mustAsObject(v.raw).DeleteIdx(idx)
 }
 
 type FunctionCallback func(info *FunctionCallbackInfo) *JsValue
@@ -306,16 +332,16 @@ type FunctionCallbackInfo struct {
 	this *JsValue
 }
 
-func newFunctionCallbackInfo(raw *v8go.FunctionCallbackInfo) *FunctionCallbackInfo {
+func newFunctionCallbackInfo(ctx *Context, raw *v8go.FunctionCallbackInfo) *FunctionCallbackInfo {
 	rawargs := raw.Args()
 	args := make([]*JsValue, len(rawargs))
 	for k, v := range rawargs {
-		args[k] = NewJsValue(v)
+		args[k] = PromiseReleaseInFuture(v)
 	}
 	return &FunctionCallbackInfo{
-		ctx:  WrapContext(raw.Context()),
+		ctx:  ctx,
 		args: args,
-		this: NewJsValue(raw.This().Value),
+		this: PromiseReleaseInFuture(raw.This().Value),
 	}
 }
 func (i *FunctionCallbackInfo) Context() *Context {
@@ -333,7 +359,7 @@ func (i *FunctionCallbackInfo) Args() []*JsValue {
 }
 func (i *FunctionCallbackInfo) GetArg(idx int) *JsValue {
 	if idx < 0 || idx >= len(i.args) {
-		return NewJsValue(v8go.Undefined(i.ctx.Raw.Isolate()))
+		return i.ctx.NullValue()
 	}
 	return i.args[idx]
 }
@@ -344,5 +370,19 @@ type FunctionTemplate struct {
 
 func (t *FunctionTemplate) GetFunction(ctx *Context) *JsValue {
 	fn := t.tmpl.GetFunction(ctx.Raw)
-	return NewJsValue(fn.Value)
+	return PromiseReleaseInFuture(fn.Value)
+}
+
+func ReleaseJsValueAsRawValue(v *JsValue) *v8go.Value {
+	val := v.raw
+	v.raw = nil
+	return val
+}
+
+func PromiseReleaseInFuture(v *v8go.Value) *JsValue {
+	val := &JsValue{
+		raw: v,
+	}
+	runtime.SetFinalizer(val, func(jv *JsValue) { jv.Release() })
+	return val
 }
