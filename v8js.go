@@ -130,7 +130,30 @@ func (v *JsValue) Release() {
 		}
 	}
 }
-
+func (v *JsValue) Array() []*JsValue {
+	result := []*JsValue{}
+	length := v.Get("length")
+	if length.IsNullOrUndefined() {
+		return result
+	}
+	ln := int(length.Integer())
+	for i := 0; i < ln; i++ {
+		item := v.GetIdx(uint32(i))
+		if item.IsNullOrUndefined() {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result
+}
+func (v *JsValue) StringArrry() []string {
+	arr := v.Array()
+	result := make([]string, len(arr))
+	for i, item := range arr {
+		result[i] = item.String()
+	}
+	return result
+}
 func (v *JsValue) String() string {
 	return v.Raw.String()
 }
