@@ -1,2 +1,2 @@
-rogchap.com/v8go v0.9.0 h1:wYbUCO4h6fjTamziHrzyrPnpFNuzPpjZY+nfmZjNaew=
-rogchap.com/v8go v0.9.0/go.mod h1:MxgP3pL2MW4dpme/72QRs8sgNMmM0pRc8DPhcuLWPAs=
+github.com/herb-go/v8go v0.0.0-20250806174030-f1099543707e h1:5f8ZUT9OmYTXPtcZaMUTV+wfuCBFuRwjmxskrVq6FBg=
+github.com/herb-go/v8go v0.0.0-20250806174030-f1099543707e/go.mod h1:NVUDicg84q21+o3zRyGsIxrm2I1leD5xj/XlF8qBuzU=
