@@ -3,6 +3,7 @@ package v8js
 import (
 	"math/big"
 	"runtime"
+	"sync"
 
 	"github.com/herb-go/v8go"
 )
@@ -10,21 +11,38 @@ import (
 func NewContext(opt ...v8go.ContextOption) *Context {
 	c := &Context{Raw: v8go.NewContext(opt...)}
 	c.objectTemplate = v8go.NewObjectTemplate(c.Raw.Isolate())
-	runtime.SetFinalizer(c, func(ctx *Context) {
-		// runtime.SetFinalizer(c, nil) // remove finalizer to prevent double release
-		// iso := ctx.Raw.Isolate()
-		// ctx.Raw.Close()
-		// iso.Dispose()
-	})
+	c.nullvalue = c.WrapWithoutReleaser(v8go.Null(c.Raw.Isolate()))
 	return c
 }
 
 type Context struct {
+	Locker         sync.Mutex
 	Raw            *v8go.Context
 	objectTemplate *v8go.ObjectTemplate
+	nullvalue      *JsValue
 }
 
-func (c *Context) Wrap(v *v8go.Value) *JsValue {
+func (c *Context) Close() {
+	c.Locker.Lock()
+	defer c.Locker.Unlock()
+	if c.Raw == nil {
+		return
+	}
+	c.Raw.Close()
+	c.Raw.Isolate().Dispose()
+	c.Raw = nil
+	c.objectTemplate = nil
+	c.nullvalue = nil
+}
+func (c *Context) WrapWithoutReleaser(v *v8go.Value) *JsValue {
+	val := &JsValue{
+		raw:       v,
+		ctx:       c,
+		noRelease: true,
+	}
+	return val
+}
+func (c *Context) PromiseReleaseInFuture(v *v8go.Value) *JsValue {
 	val := &JsValue{
 		raw: v,
 		ctx: c,
@@ -33,7 +51,7 @@ func (c *Context) Wrap(v *v8go.Value) *JsValue {
 	return val
 }
 func (c *Context) Global() *JsValue {
-	result := c.Wrap(c.Raw.Global().Value)
+	result := c.PromiseReleaseInFuture(c.Raw.Global().Value)
 	return result
 }
 
@@ -42,7 +60,7 @@ func (c *Context) newValue(v interface{}) *JsValue {
 	if err != nil {
 		panic(err)
 	}
-	return c.Wrap(val)
+	return c.PromiseReleaseInFuture(val)
 }
 func (c *Context) NewString(val string) *JsValue {
 	return c.newValue(val)
@@ -85,7 +103,7 @@ func (c *Context) NewObject() *JsValue {
 	if err != nil {
 		panic(err)
 	}
-	result := c.Wrap(obj.Value) //?
+	result := c.PromiseReleaseInFuture(obj.Value) //?
 	return result
 }
 func (c *Context) NewFunctionTemplate(callback FunctionCallback) *FunctionTemplate {
@@ -96,16 +114,16 @@ func (c *Context) RunScript(script string, name string) *JsValue {
 	if err != nil {
 		panic(err)
 	}
-	return c.Wrap(result) //报错严重
+	return c.PromiseReleaseInFuture(result) //报错严重
 }
 func (c *Context) NullValue() *JsValue {
-	val := c.Wrap(v8go.Null(c.Raw.Isolate()))
-	return val
+	return c.nullvalue
 }
 
 type JsValue struct {
-	raw *v8go.Value
-	ctx *Context
+	raw       *v8go.Value
+	ctx       *Context
+	noRelease bool
 }
 
 func mustAsObject(v *v8go.Value) *v8go.Object {
@@ -131,13 +149,13 @@ func (v *JsValue) Call(recvr *JsValue, args ...*JsValue) *JsValue {
 	}
 	fnargs := make([]v8go.Valuer, len(args))
 	for i, val := range args {
-		fnargs[i] = ReleaseJsValueAsRawValue(val)
+		fnargs[i] = val.export()
 	}
-	val, err := fn.Call(ReleaseJsValueAsRawValue(recvr), fnargs...)
+	val, err := fn.Call(recvr.export(), fnargs...)
 	if err != nil {
 		panic(err)
 	}
-	result := v.ctx.Wrap(val) //必然崩溃点
+	result := v.ctx.PromiseReleaseInFuture(val) //必然崩溃点
 	runtime.KeepAlive(v)
 	runtime.KeepAlive(recvr)
 	runtime.KeepAlive(args)
@@ -149,7 +167,14 @@ func (v *JsValue) Release() {
 	if v.raw != nil {
 		ptr := v.raw
 		v.raw = nil
-		ptr.Release()
+		if !v.noRelease {
+			v.ctx.Locker.Lock()
+			defer v.ctx.Locker.Unlock()
+			if v.ctx.Raw == nil {
+				return
+			}
+			ptr.Release()
+		}
 	}
 }
 
@@ -340,7 +365,7 @@ func (v *JsValue) Get(key string) *JsValue {
 	if err != nil {
 		panic(err)
 	}
-	result := v.ctx.Wrap(val)
+	result := v.ctx.PromiseReleaseInFuture(val)
 	runtime.KeepAlive(v)
 	return result
 }
@@ -349,7 +374,7 @@ func (v *JsValue) GetIdx(idx uint32) *JsValue {
 	if err != nil {
 		panic(err)
 	}
-	result := v.ctx.Wrap(val)
+	result := v.ctx.PromiseReleaseInFuture(val)
 	runtime.KeepAlive(v)
 	return result
 
@@ -402,9 +427,9 @@ func (f FunctionCallback) convert(c *Context) v8go.FunctionCallback {
 		rawargs := info.Args()
 		args := make([]*JsValue, len(rawargs))
 		for k, v := range rawargs {
-			args[k] = c.Wrap(v)
+			args[k] = c.WrapWithoutReleaser(v)
 		}
-		this := c.Wrap(info.This().Value)
+		this := c.WrapWithoutReleaser(info.This().Value)
 		fi := &FunctionCallbackInfo{
 			ctx:  c,
 			args: args,
@@ -414,7 +439,8 @@ func (f FunctionCallback) convert(c *Context) v8go.FunctionCallback {
 		if result == nil {
 			return nil
 		}
-		output := ReleaseJsValueAsRawValue(result)
+		result.noRelease = true
+		output := result.export()
 		runtime.KeepAlive(result)
 		runtime.KeepAlive(this)
 		runtime.KeepAlive(result)
@@ -457,7 +483,7 @@ type FunctionTemplate struct {
 
 func (t *FunctionTemplate) GetFunction(ctx *Context) *JsValue {
 	fn := t.tmpl.GetFunction(ctx.Raw)
-	return ctx.Wrap(fn.Value) //???
+	return ctx.PromiseReleaseInFuture(fn.Value)
 }
 func newFunctionTemplate(c *Context, callback FunctionCallback) *FunctionTemplate {
 	tmpl := v8go.NewFunctionTemplate(c.Raw.Isolate(), callback.convert(c))
@@ -466,9 +492,11 @@ func newFunctionTemplate(c *Context, callback FunctionCallback) *FunctionTemplat
 	}
 
 }
-func ReleaseJsValueAsRawValue(v *JsValue) *v8go.Value {
+func ExportRawValue(v *JsValue, noRlease bool) *v8go.Value {
 	val := v.raw
-	runtime.SetFinalizer(v, nil) // remove finalizer to prevent double release
+	if noRlease {
+		v.noRelease = true
+	}
 	runtime.KeepAlive(v)
 	return val
 }
