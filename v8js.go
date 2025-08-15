@@ -10,29 +10,40 @@ import (
 
 func NewContext(opt ...v8go.ContextOption) *Context {
 	c := &Context{Raw: v8go.NewContext(opt...)}
-	c.objectTemplate = v8go.NewObjectTemplate(c.Raw.Isolate())
+	g := c.Raw.Global()
+	a, err := g.Get("Array")
+	if err != nil {
+		panic(err)
+	}
+	f, err := a.AsFunction()
+	if err != nil {
+		panic(err)
+	}
+	c.array = f
 	c.nullvalue = c.WrapWithoutReleaser(v8go.Null(c.Raw.Isolate()))
 	return c
 }
 
 type Context struct {
-	Locker         sync.Mutex
-	Raw            *v8go.Context
-	objectTemplate *v8go.ObjectTemplate
-	nullvalue      *JsValue
+	locker    sync.RWMutex
+	Raw       *v8go.Context
+	array     *v8go.Function
+	nullvalue *JsValue
 }
 
 func (c *Context) Close() {
-	c.Locker.Lock()
-	defer c.Locker.Unlock()
+	c.locker.Lock()
+	defer c.locker.Unlock()
 	if c.Raw == nil {
 		return
 	}
-	c.Raw.Close()
-	c.Raw.Isolate().Dispose()
+	ctx := c.Raw
 	c.Raw = nil
-	c.objectTemplate = nil
 	c.nullvalue = nil
+	ctx.Isolate().TerminateExecution()
+	ctx.Close()
+	ctx.Isolate().Dispose()
+	runtime.GC()
 }
 func (c *Context) WrapWithoutReleaser(v *v8go.Value) *JsValue {
 	val := &JsValue{
@@ -56,6 +67,9 @@ func (c *Context) Global() *JsValue {
 }
 
 func (c *Context) newValue(v interface{}) *JsValue {
+	if c.Raw == nil {
+		return nil
+	}
 	val, err := v8go.NewValue(c.Raw.Isolate(), v)
 	if err != nil {
 		panic(err)
@@ -94,12 +108,19 @@ func (c *Context) NewStringArray(values ...string) *JsValue {
 	return c.NewArray(args...)
 }
 func (c *Context) NewArray(values ...*JsValue) *JsValue {
-	global := c.Global()
-	array := global.Get("Array")
-	return array.Call(global, values...)
+	fnargs := make([]v8go.Valuer, len(values))
+	for i, val := range values {
+		fnargs[i] = val.export()
+	}
+	result, err := c.array.Call(c.array, fnargs...)
+	if err != nil {
+		panic(err)
+	}
+	runtime.KeepAlive(values)
+	return c.PromiseReleaseInFuture(result)
 }
 func (c *Context) NewObject() *JsValue {
-	obj, err := c.objectTemplate.NewInstance(c.Raw)
+	obj, err := v8go.NewObjectTemplate(c.Raw.Isolate()).NewInstance(c.Raw)
 	if err != nil {
 		panic(err)
 	}
@@ -114,7 +135,7 @@ func (c *Context) RunScript(script string, name string) *JsValue {
 	if err != nil {
 		panic(err)
 	}
-	return c.PromiseReleaseInFuture(result) //报错严重
+	return c.PromiseReleaseInFuture(result)
 }
 func (c *Context) NullValue() *JsValue {
 	return c.nullvalue
@@ -142,8 +163,10 @@ func (v *JsValue) export() *v8go.Value {
 	return result
 }
 func (v *JsValue) Call(recvr *JsValue, args ...*JsValue) *JsValue {
+	if v.raw == nil {
+		return nil
+	}
 	fn, err := v.export().AsFunction()
-
 	if err != nil {
 		panic(err)
 	}
@@ -155,7 +178,7 @@ func (v *JsValue) Call(recvr *JsValue, args ...*JsValue) *JsValue {
 	if err != nil {
 		panic(err)
 	}
-	result := v.ctx.PromiseReleaseInFuture(val) //必然崩溃点
+	result := v.ctx.PromiseReleaseInFuture(val)
 	runtime.KeepAlive(v)
 	runtime.KeepAlive(recvr)
 	runtime.KeepAlive(args)
@@ -163,13 +186,12 @@ func (v *JsValue) Call(recvr *JsValue, args ...*JsValue) *JsValue {
 }
 
 func (v *JsValue) Release() {
-	runtime.SetFinalizer(v, nil) // remove finalizer to prevent double release
 	if v.raw != nil {
 		ptr := v.raw
 		v.raw = nil
 		if !v.noRelease {
-			v.ctx.Locker.Lock()
-			defer v.ctx.Locker.Unlock()
+			v.ctx.locker.Lock()
+			defer v.ctx.locker.Unlock()
 			if v.ctx.Raw == nil {
 				return
 			}
@@ -420,34 +442,49 @@ func (v *JsValue) DeleteIdx(idx uint32) bool {
 	return result
 }
 
+type callback struct {
+	cb  FunctionCallback
+	ctx *Context
+}
+
+func (c *callback) call(info *v8go.FunctionCallbackInfo) *v8go.Value {
+	rawargs := info.Args()
+	args := make([]*JsValue, len(rawargs))
+	for k, v := range rawargs {
+		args[k] = c.ctx.PromiseReleaseInFuture(v)
+	}
+	this := c.ctx.PromiseReleaseInFuture(info.This().Value)
+	fi := &FunctionCallbackInfo{
+		ctx:  c.ctx,
+		args: args,
+		this: this,
+	}
+	result := c.cb(fi)
+	if result == nil {
+		return nil
+	}
+	result.noRelease = true
+	output := result.export()
+	runtime.KeepAlive(result)
+	runtime.KeepAlive(this)
+	runtime.KeepAlive(args)
+	runtime.KeepAlive(info)
+	runtime.KeepAlive(fi)
+	return output
+
+}
+
 type FunctionCallback func(info *FunctionCallbackInfo) *JsValue
 
-func (f FunctionCallback) convert(c *Context) v8go.FunctionCallback {
-	return func(info *v8go.FunctionCallbackInfo) *v8go.Value {
-		rawargs := info.Args()
-		args := make([]*JsValue, len(rawargs))
-		for k, v := range rawargs {
-			args[k] = c.WrapWithoutReleaser(v)
-		}
-		this := c.WrapWithoutReleaser(info.This().Value)
-		fi := &FunctionCallbackInfo{
-			ctx:  c,
-			args: args,
-			this: this,
-		}
-		result := f(fi)
-		if result == nil {
-			return nil
-		}
-		result.noRelease = true
-		output := result.export()
-		runtime.KeepAlive(result)
-		runtime.KeepAlive(this)
-		runtime.KeepAlive(result)
-		runtime.KeepAlive(args)
-		runtime.KeepAlive(info)
-		runtime.KeepAlive(fi)
-		return output
+func (f FunctionCallback) newCallback(c *Context) *callback {
+	return &callback{cb: f, ctx: c}
+}
+
+func NewFunctionCallbackInfo(ctx *Context, this *JsValue, args ...*JsValue) *FunctionCallbackInfo {
+	return &FunctionCallbackInfo{
+		ctx:  ctx,
+		this: this,
+		args: args,
 	}
 }
 
@@ -486,15 +523,14 @@ func (t *FunctionTemplate) GetFunction(ctx *Context) *JsValue {
 	return ctx.PromiseReleaseInFuture(fn.Value)
 }
 func newFunctionTemplate(c *Context, callback FunctionCallback) *FunctionTemplate {
-	tmpl := v8go.NewFunctionTemplate(c.Raw.Isolate(), callback.convert(c))
+	tmpl := v8go.NewFunctionTemplate(c.Raw.Isolate(), callback.newCallback(c).call)
 	return &FunctionTemplate{
 		tmpl: tmpl,
 	}
-
 }
-func ExportRawValue(v *JsValue, noRlease bool) *v8go.Value {
+func ExportRawValue(v *JsValue, noRelease bool) *v8go.Value {
 	val := v.raw
-	if noRlease {
+	if noRelease {
 		v.noRelease = true
 	}
 	runtime.KeepAlive(v)
