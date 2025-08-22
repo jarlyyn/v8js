@@ -85,13 +85,13 @@ func (c *Context) NewFunction(callback FunctionCallback) *JsValue {
 }
 
 func (c *Context) NewStringArray(values ...string) *JsValue {
-	args := make([]*JsValue, len(values))
+	args := make([]*Consumed, len(values))
 	for i, v := range values {
-		args[i] = c.NewString(v)
+		args[i] = c.NewString(v).Consume()
 	}
 	return c.NewArray(args...)
 }
-func (c *Context) NewArray(values ...*JsValue) *JsValue {
+func (c *Context) NewArray(values ...*Consumed) *JsValue {
 	a := c.RunScript("Array", "array")
 	result := a.Call(a, values...)
 	a.Release()
@@ -119,11 +119,27 @@ func (c *Context) NullValue() *JsValue {
 	return c.nullvalue
 }
 
+// Consumed Should be used to wrap a JsValue that is consumed by a function call.
+// You should not use JsValue directly after calling a function that consumes it.
+type Consumed struct {
+	*JsValue
+}
+
+// JsValue is a wrapper for v8go.Value
+//
+// YOU MUST CALL Release() ON CONSUMED METHOD WHEN YOU FINISH USING IT.
+//
+// OR YOU CAN CALL CONSUM() METHOD TO GET A CONSUMED VALUE AND PASS IT TO FUNCTION CALL.
 type JsValue struct {
 	raw *v8go.Value
 	ctx *Context
 }
 
+func (v *JsValue) Consume() *Consumed {
+	return &Consumed{
+		JsValue: v,
+	}
+}
 func mustAsObject(v *v8go.Value) *v8go.Object {
 	o, err := v.AsObject()
 	if err != nil {
@@ -137,7 +153,7 @@ func (v *JsValue) export() *v8go.Value {
 	}
 	return v.raw
 }
-func (v *JsValue) Call(recvr *JsValue, args ...*JsValue) *JsValue {
+func (v *JsValue) Call(recvr *JsValue, args ...*Consumed) *JsValue {
 	if v.raw == nil {
 		return nil
 	}
@@ -157,9 +173,6 @@ func (v *JsValue) Call(recvr *JsValue, args ...*JsValue) *JsValue {
 		args[i].Release()
 	}
 	result := v.ctx.Wrap(val)
-	runtime.KeepAlive(v)
-	runtime.KeepAlive(recvr)
-	runtime.KeepAlive(args)
 	return result
 }
 
@@ -170,11 +183,11 @@ func (v *JsValue) Release() {
 func (v *JsValue) Array() []*JsValue {
 	result := []*JsValue{}
 	length := v.Get("length")
+	defer length.Release()
 	if length.IsNullOrUndefined() {
 		return result
 	}
 	ln := int(length.Integer())
-	length.Release()
 	for i := 0; i < ln; i++ {
 		item := v.GetIdx(uint32(i))
 		if item.IsNullOrUndefined() {
@@ -339,16 +352,16 @@ func (v *JsValue) MustMarshalJSON() []byte {
 	return data
 }
 
-func (v *JsValue) MethodCall(methodName string, args ...*JsValue) *JsValue {
+func (v *JsValue) MethodCall(methodName string, args ...*Consumed) *JsValue {
 	fn := v.Get(methodName) // ensure method exists
+	defer fn.Release()
 	result := fn.Call(v, args...)
-	fn.Release()
 	runtime.KeepAlive(fn)
 	runtime.KeepAlive(args)
 	return result
 }
 func (v *JsValue) SetObjectMethod(ctx *Context, name string, fn FunctionCallback) {
-	f := ctx.NewFunctionTemplate(fn).GetFunction(ctx)
+	f := ctx.NewFunctionTemplate(fn).GetFunction(ctx).Consume()
 	v.Set(name, f)
 	runtime.KeepAlive(f)
 }
@@ -372,23 +385,20 @@ func (v *JsValue) GetIdx(idx uint32) *JsValue {
 
 }
 
-func (v *JsValue) Set(key string, val *JsValue) {
+func (v *JsValue) Set(key string, val *Consumed) {
+	defer val.Release()
 	err := mustAsObject(v.export()).Set(key, val.export())
 	if err != nil {
 		panic(err)
 	}
-	val.Release()
-	runtime.KeepAlive(val)
-	runtime.KeepAlive(v)
 }
 
-func (v *JsValue) SetIdx(idx uint32, val *JsValue) {
+func (v *JsValue) SetIdx(idx uint32, val *Consumed) {
+	defer val.Release()
 	err := mustAsObject(v.export()).SetIdx(idx, val.export())
 	if err != nil {
 		panic(err)
 	}
-	runtime.KeepAlive(val)
-	runtime.KeepAlive(v)
 }
 func (v *JsValue) Has(key string) bool {
 	result := mustAsObject(v.export()).Has(key)
@@ -403,13 +413,11 @@ func (v *JsValue) HasIdx(idx uint32) bool {
 
 func (v *JsValue) Delete(key string) bool {
 	result := mustAsObject(v.export()).Delete(key)
-	runtime.KeepAlive(v)
 	return result
 }
 
 func (v *JsValue) DeleteIdx(idx uint32) bool {
 	result := mustAsObject(v.export()).DeleteIdx(idx)
-	runtime.KeepAlive(v)
 	return result
 }
 
@@ -420,20 +428,17 @@ type callback struct {
 
 func (c *callback) call(info *v8go.FunctionCallbackInfo) *v8go.Value {
 	rawargs := info.Args()
-	args := make([]*JsValue, len(rawargs))
+	args := make([]*Consumed, len(rawargs))
 	for k, v := range rawargs {
-		args[k] = c.ctx.Wrap(v)
+		args[k] = c.ctx.Wrap(v).Consume()
 	}
-	this := c.ctx.Wrap(info.This().Value)
-	fi := &FunctionCallbackInfo{
-		ctx:  c.ctx,
-		args: args,
-		this: this,
-	}
+	this := c.ctx.Wrap(info.This().Value).Consume()
+	defer this.JsValue.Release()
+	fi := NewFunctionCallbackInfo(c.ctx, this, args...)
 	result := c.cb(fi)
-	this.Release()
+
 	for k := range args {
-		args[k].Release()
+		args[k].JsValue.Release()
 	}
 	if result == nil {
 		return nil
@@ -443,13 +448,13 @@ func (c *callback) call(info *v8go.FunctionCallbackInfo) *v8go.Value {
 
 }
 
-type FunctionCallback func(info *FunctionCallbackInfo) *JsValue
+type FunctionCallback func(info *FunctionCallbackInfo) *Consumed
 
 func (f FunctionCallback) newCallback(c *Context) *callback {
 	return &callback{cb: f, ctx: c}
 }
 
-func NewFunctionCallbackInfo(ctx *Context, this *JsValue, args ...*JsValue) *FunctionCallbackInfo {
+func NewFunctionCallbackInfo(ctx *Context, this *Consumed, args ...*Consumed) *FunctionCallbackInfo {
 	return &FunctionCallbackInfo{
 		ctx:  ctx,
 		this: this,
@@ -459,8 +464,8 @@ func NewFunctionCallbackInfo(ctx *Context, this *JsValue, args ...*JsValue) *Fun
 
 type FunctionCallbackInfo struct {
 	ctx  *Context
-	args []*JsValue
-	this *JsValue
+	args []*Consumed
+	this *Consumed
 }
 
 func (i *FunctionCallbackInfo) Context() *Context {
@@ -468,17 +473,17 @@ func (i *FunctionCallbackInfo) Context() *Context {
 }
 
 // This returns the receiver object "this".
-func (i *FunctionCallbackInfo) This() *JsValue {
+func (i *FunctionCallbackInfo) This() *Consumed {
 	return i.this
 }
 
 // Args returns a slice of the value arguments that are passed to the JS function.
-func (i *FunctionCallbackInfo) Args() []*JsValue {
+func (i *FunctionCallbackInfo) Args() []*Consumed {
 	return i.args
 }
-func (i *FunctionCallbackInfo) GetArg(idx int) *JsValue {
+func (i *FunctionCallbackInfo) GetArg(idx int) *Consumed {
 	if idx < 0 || idx >= len(i.args) {
-		return i.ctx.NullValue()
+		return i.ctx.NullValue().Consume()
 	}
 	return i.args[idx]
 }

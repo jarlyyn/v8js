@@ -30,7 +30,7 @@ func TestAddon(t *testing.T) {
 		"test",
 		func(ctx context.Context, p herbplugin.Plugin, next func(ctx context.Context, plugin herbplugin.Plugin)) {
 			plugin := p.(*v8plugin.Plugin)
-			plugin.Runtime.Global().Set("HTTP", Create(p).Convert(plugin.Runtime))
+			plugin.Runtime.Global().Set("HTTP", Create(p).Convert(plugin.Runtime).Consume())
 			next(ctx, p)
 		},
 		func(ctx context.Context, p herbplugin.Plugin, next func(ctx context.Context, plugin herbplugin.Plugin)) {
@@ -44,6 +44,6 @@ func TestAddon(t *testing.T) {
 	p := v8plugin.MustCreatePlugin(i)
 	herbplugin.Lanuch(p, opt)
 	test := p.Runtime.Global().Get("test")
-	test.Call(test, p.Runtime.NewString(s.URL))
+	test.Call(test, p.Runtime.NewString(s.URL).Consume())
 
 }

@@ -45,12 +45,12 @@ func (p *Plugin) MustInitPlugin() {
 	}
 	builtin := p.Runtime.NewObject()
 	for key, fn := range p.Builtin {
-		builtin.Set(key, fn)
+		builtin.Set(key, fn.Consume())
 	}
 	herbplugin.Exec(p, processs...)
 	if !p.DisableBuiltin {
 		global := p.Runtime.Global()
-		global.Set(p.namespace, builtin)
+		global.Set(p.namespace, builtin.Consume())
 
 	}
 }
