@@ -10,25 +10,16 @@ import (
 
 func NewContext(opt ...v8go.ContextOption) *Context {
 	c := &Context{Raw: v8go.NewContext(opt...)}
-	g := c.Raw.Global()
-	a, err := g.Get("Array")
-	if err != nil {
-		panic(err)
-	}
-	f, err := a.AsFunction()
-	if err != nil {
-		panic(err)
-	}
-	c.array = f
-	c.nullvalue = c.WrapWithoutReleaser(v8go.Null(c.Raw.Isolate()))
+	c.objectTemplate = v8go.NewObjectTemplate(c.Raw.Isolate())
+	c.nullvalue = c.Wrap(v8go.Null(c.Raw.Isolate()))
 	return c
 }
 
 type Context struct {
-	locker    sync.RWMutex
-	Raw       *v8go.Context
-	array     *v8go.Function
-	nullvalue *JsValue
+	locker         sync.RWMutex
+	objectTemplate *v8go.ObjectTemplate
+	Raw            *v8go.Context
+	nullvalue      *JsValue
 }
 
 func (c *Context) Close() {
@@ -40,41 +31,34 @@ func (c *Context) Close() {
 	ctx := c.Raw
 	c.Raw = nil
 	c.nullvalue = nil
-	ctx.Isolate().TerminateExecution()
+	c.objectTemplate = nil
 	ctx.Close()
 	ctx.Isolate().Dispose()
 	runtime.GC()
 }
-func (c *Context) WrapWithoutReleaser(v *v8go.Value) *JsValue {
-	val := &JsValue{
-		raw:       v,
-		ctx:       c,
-		noRelease: true,
-	}
-	return val
-}
-func (c *Context) PromiseReleaseInFuture(v *v8go.Value) *JsValue {
+func (c *Context) Wrap(v *v8go.Value) *JsValue {
 	val := &JsValue{
 		raw: v,
 		ctx: c,
 	}
-	runtime.SetFinalizer(val, (*JsValue).Release)
 	return val
 }
+
 func (c *Context) Global() *JsValue {
-	result := c.PromiseReleaseInFuture(c.Raw.Global().Value)
+	result := c.Wrap(c.Raw.Global().Value)
 	return result
 }
 
 func (c *Context) newValue(v interface{}) *JsValue {
-	if c.Raw == nil {
+	if c == nil || c.Raw == nil {
 		return nil
 	}
 	val, err := v8go.NewValue(c.Raw.Isolate(), v)
+	runtime.KeepAlive(v)
 	if err != nil {
 		panic(err)
 	}
-	return c.PromiseReleaseInFuture(val)
+	return c.Wrap(val)
 }
 func (c *Context) NewString(val string) *JsValue {
 	return c.newValue(val)
@@ -108,23 +92,17 @@ func (c *Context) NewStringArray(values ...string) *JsValue {
 	return c.NewArray(args...)
 }
 func (c *Context) NewArray(values ...*JsValue) *JsValue {
-	fnargs := make([]v8go.Valuer, len(values))
-	for i, val := range values {
-		fnargs[i] = val.export()
-	}
-	result, err := c.array.Call(c.array, fnargs...)
-	if err != nil {
-		panic(err)
-	}
-	runtime.KeepAlive(values)
-	return c.PromiseReleaseInFuture(result)
+	a := c.RunScript("Array", "array")
+	result := a.Call(a, values...)
+	a.Release()
+	return result
 }
 func (c *Context) NewObject() *JsValue {
-	obj, err := v8go.NewObjectTemplate(c.Raw.Isolate()).NewInstance(c.Raw)
+	obj, err := c.objectTemplate.NewInstance(c.Raw)
 	if err != nil {
 		panic(err)
 	}
-	result := c.PromiseReleaseInFuture(obj.Value) //?
+	result := c.Wrap(obj.Value) //?
 	return result
 }
 func (c *Context) NewFunctionTemplate(callback FunctionCallback) *FunctionTemplate {
@@ -135,16 +113,15 @@ func (c *Context) RunScript(script string, name string) *JsValue {
 	if err != nil {
 		panic(err)
 	}
-	return c.PromiseReleaseInFuture(result)
+	return c.Wrap(result)
 }
 func (c *Context) NullValue() *JsValue {
 	return c.nullvalue
 }
 
 type JsValue struct {
-	raw       *v8go.Value
-	ctx       *Context
-	noRelease bool
+	raw *v8go.Value
+	ctx *Context
 }
 
 func mustAsObject(v *v8go.Value) *v8go.Object {
@@ -158,9 +135,7 @@ func (v *JsValue) export() *v8go.Value {
 	if v == nil {
 		return nil
 	}
-	result := v.raw
-	runtime.KeepAlive(v)
-	return result
+	return v.raw
 }
 func (v *JsValue) Call(recvr *JsValue, args ...*JsValue) *JsValue {
 	if v.raw == nil {
@@ -178,7 +153,10 @@ func (v *JsValue) Call(recvr *JsValue, args ...*JsValue) *JsValue {
 	if err != nil {
 		panic(err)
 	}
-	result := v.ctx.PromiseReleaseInFuture(val)
+	for i := range args {
+		args[i].Release()
+	}
+	result := v.ctx.Wrap(val)
 	runtime.KeepAlive(v)
 	runtime.KeepAlive(recvr)
 	runtime.KeepAlive(args)
@@ -186,18 +164,7 @@ func (v *JsValue) Call(recvr *JsValue, args ...*JsValue) *JsValue {
 }
 
 func (v *JsValue) Release() {
-	if v.raw != nil {
-		ptr := v.raw
-		v.raw = nil
-		if !v.noRelease {
-			v.ctx.locker.Lock()
-			defer v.ctx.locker.Unlock()
-			if v.ctx.Raw == nil {
-				return
-			}
-			ptr.Release()
-		}
-	}
+	v.raw.Release()
 }
 
 func (v *JsValue) Array() []*JsValue {
@@ -207,6 +174,7 @@ func (v *JsValue) Array() []*JsValue {
 		return result
 	}
 	ln := int(length.Integer())
+	length.Release()
 	for i := 0; i < ln; i++ {
 		item := v.GetIdx(uint32(i))
 		if item.IsNullOrUndefined() {
@@ -221,6 +189,7 @@ func (v *JsValue) StringArrry() []string {
 	result := make([]string, len(arr))
 	for i, item := range arr {
 		result[i] = item.String()
+		item.Release()
 	}
 	return result
 }
@@ -373,6 +342,7 @@ func (v *JsValue) MustMarshalJSON() []byte {
 func (v *JsValue) MethodCall(methodName string, args ...*JsValue) *JsValue {
 	fn := v.Get(methodName) // ensure method exists
 	result := fn.Call(v, args...)
+	fn.Release()
 	runtime.KeepAlive(fn)
 	runtime.KeepAlive(args)
 	return result
@@ -387,7 +357,7 @@ func (v *JsValue) Get(key string) *JsValue {
 	if err != nil {
 		panic(err)
 	}
-	result := v.ctx.PromiseReleaseInFuture(val)
+	result := v.ctx.Wrap(val)
 	runtime.KeepAlive(v)
 	return result
 }
@@ -396,7 +366,7 @@ func (v *JsValue) GetIdx(idx uint32) *JsValue {
 	if err != nil {
 		panic(err)
 	}
-	result := v.ctx.PromiseReleaseInFuture(val)
+	result := v.ctx.Wrap(val)
 	runtime.KeepAlive(v)
 	return result
 
@@ -407,6 +377,7 @@ func (v *JsValue) Set(key string, val *JsValue) {
 	if err != nil {
 		panic(err)
 	}
+	val.Release()
 	runtime.KeepAlive(val)
 	runtime.KeepAlive(v)
 }
@@ -451,25 +422,23 @@ func (c *callback) call(info *v8go.FunctionCallbackInfo) *v8go.Value {
 	rawargs := info.Args()
 	args := make([]*JsValue, len(rawargs))
 	for k, v := range rawargs {
-		args[k] = c.ctx.PromiseReleaseInFuture(v)
+		args[k] = c.ctx.Wrap(v)
 	}
-	this := c.ctx.PromiseReleaseInFuture(info.This().Value)
+	this := c.ctx.Wrap(info.This().Value)
 	fi := &FunctionCallbackInfo{
 		ctx:  c.ctx,
 		args: args,
 		this: this,
 	}
 	result := c.cb(fi)
+	this.Release()
+	for k := range args {
+		args[k].Release()
+	}
 	if result == nil {
 		return nil
 	}
-	result.noRelease = true
 	output := result.export()
-	runtime.KeepAlive(result)
-	runtime.KeepAlive(this)
-	runtime.KeepAlive(args)
-	runtime.KeepAlive(info)
-	runtime.KeepAlive(fi)
 	return output
 
 }
@@ -520,7 +489,7 @@ type FunctionTemplate struct {
 
 func (t *FunctionTemplate) GetFunction(ctx *Context) *JsValue {
 	fn := t.tmpl.GetFunction(ctx.Raw)
-	return ctx.PromiseReleaseInFuture(fn.Value)
+	return ctx.Wrap(fn.Value)
 }
 func newFunctionTemplate(c *Context, callback FunctionCallback) *FunctionTemplate {
 	tmpl := v8go.NewFunctionTemplate(c.Raw.Isolate(), callback.newCallback(c).call)
@@ -529,10 +498,5 @@ func newFunctionTemplate(c *Context, callback FunctionCallback) *FunctionTemplat
 	}
 }
 func ExportRawValue(v *JsValue, noRelease bool) *v8go.Value {
-	val := v.raw
-	if noRelease {
-		v.noRelease = true
-	}
-	runtime.KeepAlive(v)
-	return val
+	return v.raw
 }
