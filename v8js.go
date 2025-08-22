@@ -119,10 +119,32 @@ func (c *Context) NullValue() *JsValue {
 	return c.nullvalue
 }
 
+type Reusable struct {
+	value *JsValue
+}
+
+func (r *Reusable) Consume() *Consumed {
+	return &Consumed{
+		JsValue:   r.value,
+		noRelease: true,
+	}
+}
+func (r *Reusable) Dispose() {
+	r.value.Release()
+}
+
 // Consumed Should be used to wrap a JsValue that is consumed by a function call.
 // You should not use JsValue directly after calling a function that consumes it.
 type Consumed struct {
 	*JsValue
+	noRelease bool // if true, JsValue.Release() will not be called automatically
+}
+
+func (c *Consumed) Release() {
+	if c.noRelease {
+		return
+	}
+	c.JsValue.Release()
 }
 
 // JsValue is a wrapper for v8go.Value
@@ -138,6 +160,15 @@ type JsValue struct {
 func (v *JsValue) Consume() *Consumed {
 	return &Consumed{
 		JsValue: v,
+	}
+}
+
+// Reuse returns a reusable value that can be used to avoid unnecessary allocations.
+// You should call Dispoe() on the returned value when you finish using it.
+// You should not call Consume() on JsValue if you call ConsumeReuseble() on it.
+func (v *JsValue) ConsumeReuseble() *Reusable {
+	return &Reusable{
+		value: v,
 	}
 }
 func mustAsObject(v *v8go.Value) *v8go.Object {
@@ -433,12 +464,12 @@ func (c *callback) call(info *v8go.FunctionCallbackInfo) *v8go.Value {
 		args[k] = c.ctx.Wrap(v).Consume()
 	}
 	this := c.ctx.Wrap(info.This().Value).Consume()
-	defer this.JsValue.Release()
+	defer this.Release()
 	fi := NewFunctionCallbackInfo(c.ctx, this, args...)
 	result := c.cb(fi)
 
 	for k := range args {
-		args[k].JsValue.Release()
+		args[k].Release()
 	}
 	if result == nil {
 		return nil
