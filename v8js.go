@@ -1,6 +1,7 @@
 package v8js
 
 import (
+	"fmt"
 	"math/big"
 	"runtime"
 	"sync"
@@ -104,6 +105,11 @@ func (c *Context) NewObject() *JsValue {
 	}
 	result := c.Wrap(obj.Value) //?
 	return result
+}
+func (c *Context) NewArrayBuffer(data []byte) *JsValue {
+	v := c.RunScript(fmt.Sprintf("new ArrayBuffer(%d)", len(data)), "arraybuffer.js")
+	v8go.WriteToArrayBuffer(v.export(), data)
+	return v
 }
 func (c *Context) NewFunctionTemplate(callback FunctionCallback) *FunctionTemplate {
 	return newFunctionTemplate(c, callback)
@@ -273,6 +279,12 @@ func (v *JsValue) Uint32() uint32 {
 	runtime.KeepAlive(v)
 	return result
 }
+func (v *JsValue) ArrayBufferContent() []byte {
+	result := v8go.ArrayBufferContent(v.export())
+	runtime.KeepAlive(v)
+	return result
+}
+
 func (v *JsValue) SameValue(other *JsValue) bool {
 	result := v.export().SameValue(other.raw)
 	runtime.KeepAlive(other)
@@ -373,7 +385,11 @@ func (v *JsValue) IsArray() bool {
 	runtime.KeepAlive(v)
 	return result
 }
-
+func (v *JsValue) IsArrayBuffer() bool {
+	result := v.export().IsArrayBuffer()
+	runtime.KeepAlive(v)
+	return result
+}
 func (v *JsValue) MustMarshalJSON() []byte {
 	data, err := v.export().MarshalJSON()
 	if err != nil {

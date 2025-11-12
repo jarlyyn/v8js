@@ -18,8 +18,8 @@ github.com/herb-go/herbplugin v0.0.0-20251105104000-ca813dae4fd7 h1:HthNajQVbRHj
 github.com/herb-go/herbplugin v0.0.0-20251105104000-ca813dae4fd7/go.mod h1:T2iltTRvESXuFGmISXc/e85KX0xN947GDcwp432L9iA=
 github.com/herb-go/plugins v0.0.0-20251105104654-1ad36b135de5 h1:mMyLsdzWJMX0oepxYUuD9jZq68YmoQgAwWCfmASDi2g=
 github.com/herb-go/plugins v0.0.0-20251105104654-1ad36b135de5/go.mod h1:0OHjZ/W/BeXy/s/K/g0th3z/xKAKqUmEYFH9eWe5Zqw=
-github.com/herb-go/v8go v0.0.0-20251105092923-0b0a43b741fc h1:8qkbozQyEO3cOiFOAignYOHLbCXL1cOiYWIVmbWrPCA=
-github.com/herb-go/v8go v0.0.0-20251105092923-0b0a43b741fc/go.mod h1:NVUDicg84q21+o3zRyGsIxrm2I1leD5xj/XlF8qBuzU=
+github.com/herb-go/v8go v0.0.0-20251112181010-94bfabae2e0f h1:0Iv71Ge1SWcUPQdCeA6b5HT3FUKfF9Jsk8f9e5Tf76s=
+github.com/herb-go/v8go v0.0.0-20251112181010-94bfabae2e0f/go.mod h1:NVUDicg84q21+o3zRyGsIxrm2I1leD5xj/XlF8qBuzU=
 github.com/ianlancetaylor/demangle v0.0.0-20220319035150-800ac71e25c2/go.mod h1:aYm2/VgdVmcIU8iMfdMvDMsRAQjcfZSKFby6HOFvi/w=
 github.com/kr/pretty v0.1.0/go.mod h1:dAy3ld7l9f0ibDNOQOHHMYYIIbhfbHSm3C4ZsoJORNo=
 github.com/kr/pretty v0.2.1/go.mod h1:ipq/a2n7PKx3OHsz4KJII5eveXtPO4qwEXGdVfWzfnI=
