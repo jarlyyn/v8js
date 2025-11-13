@@ -135,6 +135,11 @@ func (r *Reusable) Consume() *Consumed {
 		noRelease: true,
 	}
 }
+func (r *Reusable) FinalConsume() *Consumed {
+	return &Consumed{
+		JsValue: r.value,
+	}
+}
 func (r *Reusable) Dispose() {
 	r.value.Release()
 }
@@ -170,7 +175,7 @@ func (v *JsValue) Consume() *Consumed {
 }
 
 // Reuse returns a reusable value that can be used to avoid unnecessary allocations.
-// You should call Dispoe() on the returned value when you finish using it.
+// You should call Dispoe() or FinalConsume() on the returned value when you finish using it.
 // You should not call Consume() on JsValue if you call ConsumeReuseble() on it.
 func (v *JsValue) ConsumeReuseble() *Reusable {
 	return &Reusable{
