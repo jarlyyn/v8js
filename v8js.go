@@ -477,15 +477,15 @@ func (c *callback) call(info *v8go.FunctionCallbackInfo) *v8go.Value {
 	rawargs := info.Args()
 	args := make([]*Consumed, len(rawargs))
 	for k, v := range rawargs {
-		args[k] = c.ctx.Wrap(v).Consume()
+		args[k] = c.ctx.Wrap(v).ConsumeReuseble().Consume()
 	}
-	this := c.ctx.Wrap(info.This().Value).Consume()
-	defer this.Release()
+	this := c.ctx.Wrap(info.This().Value).ConsumeReuseble().Consume()
+	defer this.JsValue.Release()
 	fi := NewFunctionCallbackInfo(c.ctx, this, args...)
 	result := c.cb(fi)
 
 	for k := range args {
-		args[k].Release()
+		args[k].JsValue.Release()
 	}
 	if result == nil {
 		return nil
