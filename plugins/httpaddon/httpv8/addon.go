@@ -20,6 +20,7 @@ var DefaultBuilder = func(r *v8js.Context, req *Request) *v8js.JsValue {
 	obj.SetObjectMethod(r, "GetMethod", req.GetMethod)
 	obj.SetObjectMethod(r, "SetMethod", req.SetMethod)
 	obj.SetObjectMethod(r, "GetBody", req.GetBody)
+	obj.SetObjectMethod(r, "GetBodyArrayBuffer", req.GetBodyArrayBuffer)
 	obj.SetObjectMethod(r, "SetBody", req.SetBody)
 	obj.SetObjectMethod(r, "FinishedAt", req.FinishedAt)
 	obj.SetObjectMethod(r, "ExecuteStatus", req.ExecuteStatus)
@@ -32,6 +33,7 @@ var DefaultBuilder = func(r *v8js.Context, req *Request) *v8js.JsValue {
 	obj.SetObjectMethod(r, "HeaderFields", req.HeaderFields)
 	obj.SetObjectMethod(r, "ResponseStatusCode", req.ResponseStatusCode)
 	obj.SetObjectMethod(r, "ResponseBody", req.ResponseBody)
+	obj.SetObjectMethod(r, "ResponseBodyArrayBuffer", req.ResponseBodyArrayBuffer)
 	obj.SetObjectMethod(r, "ResponseHeader", req.ResponseHeader)
 	obj.SetObjectMethod(r, "ResponseHeaderValues", req.ResponseHeaderValues)
 	obj.SetObjectMethod(r, "ResponseHeaderFields", req.ResponseHeaderFields)
@@ -80,6 +82,11 @@ func (req *Request) GetBody(call *v8js.FunctionCallbackInfo) *v8js.Consumed {
 
 	return call.Context().NewString(string(req.Request.GetBody())).Consume()
 }
+func (req *Request) GetBodyArrayBuffer(call *v8js.FunctionCallbackInfo) *v8js.Consumed {
+
+	return call.Context().NewArrayBuffer(req.Request.GetBody()).Consume()
+}
+
 func (req *Request) SetBody(call *v8js.FunctionCallbackInfo) *v8js.Consumed {
 
 	req.Request.SetBody([]byte(call.GetArg(0).String()))
@@ -148,6 +155,9 @@ func (req *Request) ResponseStatusCode(call *v8js.FunctionCallbackInfo) *v8js.Co
 func (req *Request) ResponseBody(call *v8js.FunctionCallbackInfo) *v8js.Consumed {
 
 	return call.Context().NewString(string(req.Request.ResponseBody())).Consume()
+}
+func (req *Request) ResponseBodyArrayBuffer(call *v8js.FunctionCallbackInfo) *v8js.Consumed {
+	return call.Context().NewArrayBuffer(req.Request.ResponseBody()).Consume()
 }
 func (req *Request) ResponseHeader(call *v8js.FunctionCallbackInfo) *v8js.Consumed {
 

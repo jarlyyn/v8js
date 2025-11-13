@@ -214,7 +214,9 @@ func (v *JsValue) Call(recvr *JsValue, args ...*Consumed) *JsValue {
 }
 
 func (v *JsValue) Release() {
-	v.raw.Release()
+	if !v.raw.IsNullOrUndefined() {
+		v.raw.Release()
+	}
 }
 
 func (v *JsValue) Array() []*JsValue {
