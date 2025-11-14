@@ -12,6 +12,7 @@ import (
 func NewContext(opt ...v8go.ContextOption) *Context {
 	c := &Context{Raw: v8go.NewContext(opt...)}
 	c.objectTemplate = v8go.NewObjectTemplate(c.Raw.Isolate())
+	c.nullvalue = c.Wrap(v8go.Null(c.Raw.Isolate()))
 	return c
 }
 
@@ -30,6 +31,7 @@ func (c *Context) Close() {
 	}
 	ctx := c.Raw
 	c.Raw = nil
+	c.nullvalue = nil
 	c.objectTemplate = nil
 	ctx.Close()
 	ctx.Isolate().Dispose()
@@ -50,6 +52,7 @@ func (c *Context) Global() *JsValue {
 func (c *Context) isNullValue(v *JsValue) bool {
 	return v == nil || v.raw == nil || v == c.nullvalue
 }
+
 func (c *Context) newValue(v interface{}) *JsValue {
 	if c == nil || c.Raw == nil {
 		return nil
@@ -122,7 +125,7 @@ func (c *Context) RunScript(script string, name string) *JsValue {
 	return c.Wrap(result)
 }
 func (c *Context) NullValue() *JsValue {
-	return c.newValue(nil)
+	return c.nullvalue
 }
 
 type Reusable struct {
