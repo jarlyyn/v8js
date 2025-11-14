@@ -12,7 +12,6 @@ import (
 func NewContext(opt ...v8go.ContextOption) *Context {
 	c := &Context{Raw: v8go.NewContext(opt...)}
 	c.objectTemplate = v8go.NewObjectTemplate(c.Raw.Isolate())
-	c.nullvalue = c.Wrap(v8go.Null(c.Raw.Isolate()))
 	return c
 }
 
@@ -31,7 +30,6 @@ func (c *Context) Close() {
 	}
 	ctx := c.Raw
 	c.Raw = nil
-	c.nullvalue = nil
 	c.objectTemplate = nil
 	ctx.Close()
 	ctx.Isolate().Dispose()
@@ -49,7 +47,9 @@ func (c *Context) Global() *JsValue {
 	result := c.Wrap(c.Raw.Global().Value)
 	return result
 }
-
+func (c *Context) isNullValue(v *JsValue) bool {
+	return v == c.nullvalue
+}
 func (c *Context) newValue(v interface{}) *JsValue {
 	if c == nil || c.Raw == nil {
 		return nil
@@ -122,7 +122,7 @@ func (c *Context) RunScript(script string, name string) *JsValue {
 	return c.Wrap(result)
 }
 func (c *Context) NullValue() *JsValue {
-	return c.nullvalue
+	return c.newValue(nil)
 }
 
 type Reusable struct {
@@ -219,7 +219,7 @@ func (v *JsValue) Call(recvr *JsValue, args ...*Consumed) *JsValue {
 }
 
 func (v *JsValue) Release() {
-	if !v.raw.IsNullOrUndefined() {
+	if v != nil && v.raw != nil && !v.ctx.isNullValue(v) {
 		v.raw.Release()
 	}
 }
