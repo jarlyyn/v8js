@@ -48,7 +48,7 @@ func (c *Context) Global() *JsValue {
 	return result
 }
 func (c *Context) isNullValue(v *JsValue) bool {
-	return v == c.nullvalue
+	return v == nil || v.raw == nil || v == c.nullvalue
 }
 func (c *Context) newValue(v interface{}) *JsValue {
 	if c == nil || c.Raw == nil {
@@ -219,7 +219,7 @@ func (v *JsValue) Call(recvr *JsValue, args ...*Consumed) *JsValue {
 }
 
 func (v *JsValue) Release() {
-	if v != nil && v.raw != nil && !v.ctx.isNullValue(v) {
+	if !v.ctx.isNullValue(v) {
 		v.raw.Release()
 	}
 }
