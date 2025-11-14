@@ -483,7 +483,13 @@ type callback struct {
 	ctx *Context
 }
 
-func (c *callback) call(info *v8go.FunctionCallbackInfo) *v8go.Value {
+func (c *callback) call(info *v8go.FunctionCallbackInfo) (output *v8go.Value) {
+	defer func() {
+		if r := recover(); r != nil {
+			errmsg, _ := v8go.NewValue(info.Context().Isolate(), r.(error).Error())
+			output = info.Context().Isolate().ThrowException(errmsg)
+		}
+	}()
 	rawargs := info.Args()
 	args := make([]*Consumed, len(rawargs))
 	for k, v := range rawargs {
@@ -500,7 +506,7 @@ func (c *callback) call(info *v8go.FunctionCallbackInfo) *v8go.Value {
 	if result == nil {
 		return nil
 	}
-	output := result.export()
+	output = result.export()
 	return output
 
 }
